@@ -7,6 +7,7 @@ import numpy as np
 from torch.nn import functional as F
 import torch.nn as nn
 from typing import Dict
+import psutil
 
 print('Welcome to RWKVFF! Version: 1.0.0')
 
@@ -26,7 +27,6 @@ def sample(probs, temperature: float = 1.0, top_p_usual: float = 0.8) -> int:
     out = torch.multinomial(probs.float(), 1, True)[0]
     return out
 
-
 def isIn(a, b):
     for i in a:
         if i["ctx"] == b["ctx"]:
@@ -38,7 +38,10 @@ class RWKV_RNN(nn.Module):
         super().__init__()
         self.args = args
         self.argsnumns = argsnumns
-        self.FLOAT_MODE = 'fp16'
+        if device == 'cuda':
+            self.FLOAT_MODE = 'fp16'
+        else:
+            self.FLOAT_MODE = 'fp32'
         self.RUN_DEVICE = device
         self.layerdist = layers
         self.n_layer = 0
@@ -327,9 +330,10 @@ class TOKENIZER():
         return context
 
 def loadModel(file, device='cuda', multi=True, float_mode='fp16', verbose:bool=False):
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cuda.matmul.allow_tf32 = True
+    if device == 'cuda':
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cuda.matmul.allow_tf32 = True
     np.set_printoptions(precision=4, suppress=True, linewidth=200)
     args = {}
     argsnums = {}
@@ -338,22 +342,29 @@ def loadModel(file, device='cuda', multi=True, float_mode='fp16', verbose:bool=F
     if multi:
         numdevices = int(torch.cuda.device_count())
     layerdist = []
-    if (device == "cuda"):
+    if device == "cuda":
         for devic in range(numdevices):
             layerdist += [f"cuda:{devic}"] * 28
 
-    if (device == "cuda"):
+    if device == "cuda":
         if (numdevices == 1):
             layerdist += ["proc"] * 100 + ["cuda:0"]
         else:
             layerdist += ["proc"] * 16 + [1, 0]
-
     else:
         layerdist = ["cpu"]*100
+    
     # fp32 // bf16 (saves VRAM, slightly less accurate) // fp16 (saves VRAM, slightly less accurate, can only be used with cuda, sometimes faster)
-    args["FLOAT_MODE"] = float_mode
+    if device == 'cuda':
+        args["FLOAT_MODE"] = float_mode
+    else:
+        args["FLOAT_MODE"] = 'fp32'
 
-    torch.set_num_threads(12)
+    threads_count = psutil.cpu_count(logical=False)
+    threads_count = int(threads_count/2)+threads_count
+    if verbose:
+        print('Threads:', threads_count)
+    torch.set_num_threads(int(threads_count))
     opt = "jit"
 
     if (device == "cpu" and args["FLOAT_MODE"] == "fp16"):
@@ -373,9 +384,9 @@ def loadModel(file, device='cuda', multi=True, float_mode='fp16', verbose:bool=F
 
 
 class RWKVFromFile:
-    def __init__(self, file:str, tokenizer_json:str, verbose:bool=False):
+    def __init__(self, file:str, tokenizer_json:str, verbose:bool=False, device='cuda'):
         self.verbose = verbose
-        self.model = loadModel(file, verbose=self.verbose)
+        self.model = loadModel(file, verbose=self.verbose, device=device)
         if self.verbose:
             print(self.model.n_layer)
         self.state1 = self.model.empty_state()
@@ -403,13 +414,14 @@ class RWKVFromFile:
             print("torch.cuda.memory_reserved: %fGB" % (torch.cuda.memory_reserved(0)/1024/1024/1024))
             print("torch.cuda.max_memory_reserved: %fGB" % (torch.cuda.max_memory_reserved(0)/1024/1024/1024))
         self.model_tokens = self.tokenizer.tokenizer.encode(context)
-        self.state = self.model.loadContext(newctx=self.model_tokens)
+        state = self.model.loadContext(newctx=self.model_tokens)
+        return state
 
-    def save(self, filename):
+    def save(self, filename, state):
         if self.verbose:
             print("Saved state...")
         savestates = {
-            "init": (self.state[0], self.state[1].clone())
+            "init": (state[0], state[1].clone())
         }
         torch.save(savestates, filename)
 
@@ -418,18 +430,19 @@ class RWKVFromFile:
             if self.verbose:
                 print("Loading save state...")
             savestates = torch.load(filename, map_location=torch.device('cpu'))
-            self.state = savestates["init"]
+            state = savestates["init"]
+        return state
 
-    def generate(self, context, stopping_criteria=[], max_new_tokens=25):
-        self.state = self.model.loadContext(ctx=self.state[0], statex=self.state[1], newctx=self.tokenizer.tokenizer.encode(context), silent=True)
-        self.state = [{"score": 1, "state": self.state[1], "ctx": self.state[0]}]
+    def generate(self, context, stopping_criteria=[], max_new_tokens=25, state=None):
+        state = self.model.loadContext(ctx=state[0], statex=state[1], newctx=self.tokenizer.tokenizer.encode(context), silent=True)
+        state = [{"score": 1, "state": state[1], "ctx": state[0]}]
         compiled = ''
         with torch.no_grad():
             for i in range(max_new_tokens):
-                self.state = self.model.run(self.state, temp=self.temp, top_p=self.top_p)
-                outchar = self.tokenizer.tokenizer.decode(self.state[0]["ctx"][-1])
+                state = self.model.run(state, temp=self.temp, top_p=self.top_p)
+                outchar = self.tokenizer.tokenizer.decode(state[0]["ctx"][-1])
                 if outchar in stopping_criteria:
                     break
                 compiled += outchar
-        self.state = (self.state[0]["ctx"], self.state[0]["state"])
-        return compiled
+        state = (state[0]["ctx"], state[0]["state"])
+        return compiled, state

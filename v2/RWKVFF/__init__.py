@@ -854,5 +854,5 @@ class RWKVFromFile:
         model_tokens, model_state = state['tokens'], state['state']
         generation_text, model_tokens, model_state = rnn_process(message, model_tokens, model_state, self.model, 
                                                                 self.pipeline, repeat=self.avoid_repeat_tokens, 
-                                                                    max_new_tokens=max_new_tokens)
+                                                                    max_new_tokens=max_new_tokens, completion_tokens=completion_tokens)
         return generation_text, {'tokens':model_tokens, 'state':model_state}

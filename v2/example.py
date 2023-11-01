@@ -8,10 +8,10 @@ The following is a conversation between a sentiant ai named {bot}, and a human u
 '''
 
 if __name__ == '__main__':
-    model = RWKVFF.RWKVFromFile(file='RWKV-4b-Pile-171M-20230202-7922.pth', tokenizer_json='20B_tokenizer.json', verbose=True)
+    model = RWKVFF.RWKVFromFile(file='RWKV-5-World-1B5-v2-20231025-ctx4096.pth', tokenizer_json='rwkv_vocab_v20230424', verbose=True, rwkv_version='5') # Updated for v5
     state = model.initialize(context)
     #model.load(filename='save.pt') # Loading model
     while True:
-        message, state = model.generate(f"\n\n{user}: {input(' >> ')}\n\n{bot}:", ['\n'], state=state)
+        message, state = model.generate(f"\n\n{user}: {input(' >> ')}\n\n{bot}:", ['\n', '\n\n'], state=state)
         print(message)
         model.save('save.pt', state)

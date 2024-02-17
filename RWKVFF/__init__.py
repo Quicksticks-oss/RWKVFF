@@ -1963,11 +1963,11 @@ class RWKVFromFile:
         }
         torch.save(savestates, filename)
 
-    def load(self, filename):
+    def load(self, filename, device=torch.device('cuda')):
         if os.path.isfile(filename):
             if self.verbose:
                 print("Loading save state...")
-            savestates = torch.load(filename, map_location=torch.device('cpu'))
+            savestates = torch.load(filename, map_location=device)
             state = {"tokens": savestates["tokens"], "state": savestates['state']}
             return state
 
